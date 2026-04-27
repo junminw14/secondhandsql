@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+
+{% block title %}查询结果{% endblock %}
+
+{% block content %}
+<section class="page-head">
+    <h2>查询结果</h2>
+    <p>点击查询按钮执行对应 SQL 语句，查看真实数据库返回结果。支持自定义 SELECT 查询。</p>
+</section>
+
+<section class="query-grid">
+    {% for query in query_definitions %}
+        <article class="card query-card" id="query-card-{{ query.id }}">
+            <h3>{{ query.title }}</h3>
+            <div class="sql-block">
+                <pre><code>{{ query.sql }}</code></pre>
+            </div>
+            <form action="{{ url_for('run_preset_query') }}" method="post" onsubmit="saveScroll()">
+                <input type="hidden" name="query_id" value="{{ query.id }}">
+                <button class="button" type="submit">执行查询</button>
+            </form>
+
+            {% if query.id in query_results %}
+                <div class="result-section">
+                    <h4>查询结果</h4>
+                    <table>
+                        <thead>
+                            <tr>
+                                {% for column in query_results[query.id].columns %}
+                                    <th>{{ column }}</th>
+                                {% endfor %}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for row in query_results[query.id].rows %}
+                                <tr>
+                                    {% for column in query_results[query.id].columns %}
+                                        <td>{{ row[column] if column in row.keys() else row[loop.index0] }}</td>
+                                    {% endfor %}
+                                </tr>
+                            {% else %}
+                                <tr>
+                                    <td colspan="{{ query_results[query.id].columns|length }}">暂无数据</td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            {% endif %}
+        </article>
+    {% endfor %}
+
+    <article class="card query-card" id="query-card-custom">
+        <h3>自定义查询</h3>
+        <p class="muted">仅允许 SELECT 查询，禁止 INSERT / UPDATE / DELETE / DROP 等修改操作。</p>
+        <form action="{{ url_for('run_custom_query') }}" method="post" onsubmit="saveScroll()">
+            <label class="sql-input-label">
+                <textarea name="custom_sql" rows="6" placeholder="输入 SELECT 查询语句...">{{ custom_error.sql if custom_error else '' }}</textarea>
+            </label>
+            <button class="button" type="submit">执行自定义查询</button>
+        </form>
+
+        {% if custom_error %}
+            <div class="result-section">
+                <div class="flash flash-error">{{ custom_error.error }}</div>
+            </div>
+        {% endif %}
+
+        {% if custom_result %}
+            <div class="result-section">
+                <h4>自定义查询结果</h4>
+                <table>
+                    <thead>
+                        <tr>
+                            {% for column in custom_result.columns %}
+                                <th>{{ column }}</th>
+                            {% endfor %}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in custom_result.rows %}
+                            <tr>
+                                {% for column in custom_result.columns %}
+                                    <td>{{ row[column] if column in row.keys() else row[loop.index0] }}</td>
+                                {% endfor %}
+                            </tr>
+                        {% else %}
+                            <tr>
+                                <td colspan="{{ custom_result.columns|length }}">暂无数据</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% endif %}
+    </article>
+</section>
+
+<script>
+function saveScroll() {
+    sessionStorage.setItem('scrollPos', window.scrollY);
+}
+
+window.addEventListener('load', function() {
+    const scrollPos = sessionStorage.getItem('scrollPos');
+    if (scrollPos !== null) {
+        window.scrollTo(0, parseInt(scrollPos));
+        sessionStorage.removeItem('scrollPos');
+    }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}校园二手交易平台{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <header class="site-header">
+        <div class="wrap header-inner">
+            <div>
+                <p class="eyebrow">Database Course Project</p>
+                <h1 class="site-title">校园二手交易平台数据库系统</h1>
+            </div>
+            <nav class="site-nav">
+                <a href="{{ url_for('index') }}">首页</a>
+                <a href="{{ url_for('users') }}">用户</a>
+                <a href="{{ url_for('items') }}">商品</a>
+                <a href="{{ url_for('orders') }}">订单</a>
+                <a href="{{ url_for('queries') }}">查询结果</a>
+            </nav>
+        </div>
+    </header>
+
+    <main class="wrap page-content">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <section class="flash-list">
+                    {% for category, message in messages %}
+                        <div class="flash flash-{{ category }}">{{ message }}</div>
+                    {% endfor %}
+                </section>
+            {% endif %}
+        {% endwith %}
+
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>

@@ -1,0 +1,221 @@
+{% extends "base.html" %}
+
+{% block title %}商品列表{% endblock %}
+
+{% block content %}
+<section class="page-head">
+    <h2>商品列表与数据操作</h2>
+    <p>这里直接对 SQLite 数据库执行新增、购买、改价和删除操作，刷新后可看到结果变化。</p>
+</section>
+
+<section class="operations-vertical">
+    <article class="card operation-card">
+        <h3>新增商品</h3>
+        <form class="form-compact" action="{{ url_for('add_item') }}" method="post" oninput="updateAddSql()">
+            <div class="form-line">
+                <label class="form-field">
+                    <span class="field-label">商品 ID</span>
+                    <input name="item_id" id="add_item_id" placeholder="如 i006" required pattern="^i\d+$" title="商品 ID 必须以 i 开头，如 i006">
+                </label>
+                <label class="form-field">
+                    <span class="field-label">商品名称</span>
+                    <input name="item_name" id="add_item_name" placeholder="如 Keyboard" required>
+                </label>
+                <label class="form-field">
+                    <span class="field-label">商品分类</span>
+                    <input name="category" id="add_category" placeholder="如 Electronics" required>
+                </label>
+            </div>
+            <div class="form-line">
+                <label class="form-field">
+                    <span class="field-label">价格</span>
+                    <input name="price" id="add_price" min="0" step="0.01" type="number" placeholder="0.00" required>
+                </label>
+                <label class="form-field">
+                    <span class="field-label">卖家</span>
+                    <select name="seller_id" id="add_seller_id" required>
+                        {% for user in users %}
+                            <option value="{{ user.user_id }}">{{ user.user_id }} - {{ user.user_name }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <div class="form-field form-field-btn">
+                    <button class="button" type="submit">新增商品</button>
+                </div>
+            </div>
+        </form>
+        <div class="sql-preview">
+            <pre><code id="add_sql">INSERT INTO item (item_id, item_name, category, price, status, seller_id)
+VALUES ('', '', '', 0.00, 0, '');</code></pre>
+        </div>
+        <p class="muted" style="margin-top:8px;font-size:0.85rem;">如需新增用户，请前往 <a href="{{ url_for('users') }}">用户列表</a> 操作。</p>
+    </article>
+
+    <article class="card operation-card">
+        <h3>购买商品</h3>
+        <form class="form-compact" action="{{ url_for('buy_item') }}" method="post" oninput="updateBuySql()">
+            <div class="form-line">
+                <label class="form-field">
+                    <span class="field-label">商品 ID</span>
+                    <select name="item_id" id="buy_item_id" required>
+                        {% for item in unsold_items %}
+                            <option value="{{ item.item_id }}">{{ item.item_id }} - {{ item.item_name }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <label class="form-field">
+                    <span class="field-label">买家</span>
+                    <select name="buyer_id" id="buy_buyer_id" required>
+                        {% for user in users %}
+                            <option value="{{ user.user_id }}">{{ user.user_id }} - {{ user.user_name }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <label class="form-field">
+                    <span class="field-label">订单 ID</span>
+                    <input name="order_id" id="buy_order_id" value="{{ suggested_order_id }}" required pattern="^o\d+$" title="订单 ID 必须以 o 开头，如 o003">
+                </label>
+            </div>
+            <div class="form-line">
+                <label class="form-field">
+                    <span class="field-label">订单日期</span>
+                    <input name="order_date" id="buy_order_date" type="date" value="{{ today }}" required>
+                </label>
+                <div class="form-field form-field-btn">
+                    <button class="button" type="submit">购买商品</button>
+                </div>
+            </div>
+        </form>
+        <div class="sql-preview">
+            <pre><code id="buy_sql">BEGIN;
+UPDATE item SET status = 1 WHERE item_id = '';
+INSERT INTO orders (order_id, item_id, buyer_id, order_date)
+VALUES ('', '', '', '');
+COMMIT;</code></pre>
+        </div>
+        <p class="muted" style="margin-top:8px;font-size:0.85rem;">如需新增用户，请前往 <a href="{{ url_for('users') }}">用户列表</a> 操作。</p>
+    </article>
+
+    <article class="card operation-card">
+        <h3>修改商品价格</h3>
+        <form class="form-compact" action="{{ url_for('update_price') }}" method="post" oninput="updateUpdateSql()">
+            <div class="form-line">
+                <label class="form-field">
+                    <span class="field-label">商品 ID</span>
+                    <select name="item_id" id="update_item_id" required>
+                        {% for item in items %}
+                            <option value="{{ item.item_id }}">{{ item.item_id }} - {{ item.item_name }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <label class="form-field">
+                    <span class="field-label">新价格</span>
+                    <input name="price" id="update_price" min="0" step="0.01" type="number" placeholder="0.00" required>
+                </label>
+                <div class="form-field form-field-btn">
+                    <button class="button button-secondary" type="submit">更新价格</button>
+                </div>
+            </div>
+        </form>
+        <div class="sql-preview">
+            <pre><code id="update_sql">UPDATE item SET price = 0.00 WHERE item_id = '';</code></pre>
+        </div>
+    </article>
+
+    <article class="card operation-card">
+        <h3>删除未售商品</h3>
+        <form class="form-compact" action="{{ url_for('delete_item') }}" method="post" oninput="updateDeleteSql()">
+            <div class="form-line">
+                <label class="form-field">
+                    <span class="field-label">选择商品</span>
+                    <select name="item_id" id="delete_item_id" required>
+                        {% for item in unsold_items %}
+                            <option value="{{ item.item_id }}">{{ item.item_id }} - {{ item.item_name }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <div class="form-field form-field-btn">
+                    <button class="button button-danger" type="submit">删除商品</button>
+                </div>
+            </div>
+        </form>
+        <div class="sql-preview">
+            <pre><code id="delete_sql">DELETE FROM item WHERE item_id = '';</code></pre>
+        </div>
+    </article>
+</section>
+
+<section class="card">
+    <h3>商品数据</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>商品 ID</th>
+                <th>名称</th>
+                <th>分类</th>
+                <th>价格</th>
+                <th>状态</th>
+                <th>卖家</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in items %}
+                <tr>
+                    <td>{{ item.item_id }}</td>
+                    <td>{{ item.item_name }}</td>
+                    <td>{{ item.category }}</td>
+                    <td>{{ '%.2f'|format(item.price) }}</td>
+                    <td>
+                        {% if item.status == 0 %}
+                            <span class="badge badge-open">未售出</span>
+                        {% else %}
+                            <span class="badge badge-sold">已售出</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ item.seller_id }} - {{ item.seller_name }}</td>
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+
+<script>
+function updateAddSql() {
+    const itemId = document.getElementById('add_item_id').value || '';
+    const itemName = document.getElementById('add_item_name').value || '';
+    const category = document.getElementById('add_category').value || '';
+    const price = document.getElementById('add_price').value || '0.00';
+    const sellerId = document.getElementById('add_seller_id').value || '';
+    const sql = `INSERT INTO item (item_id, item_name, category, price, status, seller_id)\nVALUES ('${itemId}', '${itemName}', '${category}', ${price}, 0, '${sellerId}');`;
+    document.getElementById('add_sql').textContent = sql;
+}
+
+function updateUpdateSql() {
+    const itemId = document.getElementById('update_item_id').value || '';
+    const price = document.getElementById('update_price').value || '0.00';
+    const sql = `UPDATE item SET price = ${price} WHERE item_id = '${itemId}';`;
+    document.getElementById('update_sql').textContent = sql;
+}
+
+function updateDeleteSql() {
+    const itemId = document.getElementById('delete_item_id').value || '';
+    const sql = `DELETE FROM item WHERE item_id = '${itemId}';`;
+    document.getElementById('delete_sql').textContent = sql;
+}
+
+function updateBuySql() {
+    const itemId = document.getElementById('buy_item_id').value || '';
+    const buyerId = document.getElementById('buy_buyer_id').value || '';
+    const orderId = document.getElementById('buy_order_id').value || '';
+    const orderDate = document.getElementById('buy_order_date').value || '';
+    const sql = `BEGIN;\nUPDATE item SET status = 1 WHERE item_id = '${itemId}';\nINSERT INTO orders (order_id, item_id, buyer_id, order_date)\nVALUES ('${orderId}', '${itemId}', '${buyerId}', '${orderDate}');\nCOMMIT;`;
+    document.getElementById('buy_sql').textContent = sql;
+}
+
+// 初始化显示
+updateAddSql();
+updateUpdateSql();
+updateDeleteSql();
+updateBuySql();
+</script>
+{% endblock %}
