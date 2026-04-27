@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import io
+import os
+import re
 import socket
 import sqlite3
 import sys
@@ -10,9 +12,24 @@ import webbrowser
 from contextlib import closing
 from datetime import date
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import qrcode
+from dotenv import load_dotenv
 from flask import Flask, flash, g, redirect, render_template, request, url_for
+
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+
+    PSYCOPG_AVAILABLE = True
+except ImportError:
+    psycopg = None
+    dict_row = None
+    PSYCOPG_AVAILABLE = False
+
+
+load_dotenv(".env.local")
 
 
 if getattr(sys, "frozen", False):
@@ -26,68 +43,87 @@ DATABASE_PATH = RUNTIME_DIR / "secondhandsql.db"
 SCHEMA_PATH = RESOURCE_DIR / "schema.sql"
 INIT_DATA_PATH = RESOURCE_DIR / "init_data.sql"
 
+RAW_POSTGRES_DSN = (
+    os.environ.get("POSTGRES_URL")
+    or os.environ.get("POSTGRES_PRISMA_URL")
+    or os.environ.get("DATABASE_URL")
+    or ""
+).strip()
+
+SEED_USERS = [
+    ("u001", "ZhangSan", "13800000001"),
+    ("u002", "LiSi", "13800000002"),
+    ("u003", "WangWu", "13800000003"),
+    ("u004", "ZhaoLiu", "13800000004"),
+]
+SEED_ITEMS = [
+    ("i001", "CalculusBook", "Book", 20, 0, "u001"),
+    ("i002", "DeskLamp", "DailyGoods", 35, 1, "u002"),
+    ("i003", "Microcontroller", "Electronics", 80, 0, "u001"),
+    ("i004", "Chair", "Furniture", 50, 1, "u003"),
+    ("i005", "WaterBottle", "DailyGoods", 15, 0, "u004"),
+]
+SEED_ORDERS = [
+    ("o001", "i002", "u001", "2024-05-01"),
+    ("o002", "i004", "u002", "2024-05-03"),
+]
+
 
 app = Flask(
     __name__,
     template_folder=str(RESOURCE_DIR / "templates"),
     static_folder=str(RESOURCE_DIR / "static"),
 )
-app.config["SECRET_KEY"] = "secondhandsql-demo-secret"
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "secondhandsql-demo-secret")
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 
 
-def get_local_ip() -> str:
-    try:
-        with closing(socket.socket(socket.AF_INET, socket.SOCK_DGRAM)) as sock:
-            sock.connect(("8.8.8.8", 80))
-            return sock.getsockname()[0]
-    except OSError:
-        return "127.0.0.1"
+def sanitize_postgres_dsn(dsn: str) -> str:
+    if not dsn:
+        return ""
 
-
-def open_browser_later(url: str, delay: float = 1.0) -> None:
-    def _open() -> None:
-        try:
-            webbrowser.open(url)
-        except OSError:
-            pass
-
-    threading.Timer(delay, _open).start()
-
-
-def generate_qr_ascii(url: str) -> str:
-    """生成 ASCII 二维码用于控制台显示"""
-    qr = qrcode.QRCode()
-    qr.add_data(url)
-    qr.make(fit=True)
-    
-    f = io.StringIO()
-    qr.print_ascii(out=f)
-    f.seek(0)
-    return f.read()
-
-
-def generate_qr_image_base64(url: str) -> str:
-    """生成 base64 编码的二维码图片用于网页显示"""
-    qr = qrcode.QRCode(
-        version=1,
-        error_correction=qrcode.constants.ERROR_CORRECT_L,
-        box_size=10,
-        border=4,
+    parsed = urlsplit(dsn)
+    allowed_query_keys = {
+        "application_name",
+        "channel_binding",
+        "connect_timeout",
+        "gssencmode",
+        "keepalives",
+        "keepalives_count",
+        "keepalives_idle",
+        "keepalives_interval",
+        "options",
+        "sslcert",
+        "sslcompression",
+        "sslcrl",
+        "sslkey",
+        "sslmode",
+        "target_session_attrs",
+    }
+    query = urlencode(
+        [
+            (key, value)
+            for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+            if key in allowed_query_keys
+        ],
+        doseq=True,
     )
-    qr.add_data(url)
-    qr.make(fit=True)
-    
-    img = qr.make_image(fill_color="black", back_color="white")
-    
-    buffer = io.BytesIO()
-    img.save(buffer, format="PNG")
-    img_str = base64.b64encode(buffer.getvalue()).decode()
-    
-    return f"data:image/png;base64,{img_str}"
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, query, parsed.fragment))
 
 
-def get_db() -> sqlite3.Connection:
+POSTGRES_DSN = sanitize_postgres_dsn(RAW_POSTGRES_DSN)
+
+
+def is_postgres() -> bool:
+    return bool(POSTGRES_DSN and PSYCOPG_AVAILABLE)
+
+
+def get_db():
+    if is_postgres():
+        if "db" not in g:
+            g.db = psycopg.connect(POSTGRES_DSN, row_factory=dict_row, prepare_threshold=None)
+        return g.db
+
     if "db" not in g:
         connection = sqlite3.connect(DATABASE_PATH)
         connection.row_factory = sqlite3.Row
@@ -101,6 +137,42 @@ def close_db(_exception: BaseException | None) -> None:
     connection = g.pop("db", None)
     if connection is not None:
         connection.close()
+
+
+def prepare_sql(query: str) -> str:
+    if not is_postgres():
+        return query
+
+    query = re.sub(r'\b(FROM|JOIN)\s+user\b', r'\1 "user"', query, flags=re.IGNORECASE)
+    query = re.sub(r'\b(INTO|UPDATE|TABLE)\s+user\b', r'\1 "user"', query, flags=re.IGNORECASE)
+    return query.replace("?", "%s")
+
+
+def execute_sql(query: str, params: tuple = ()):
+    return get_db().execute(prepare_sql(query), params)
+
+
+def fetch_all(query: str, params: tuple = ()) -> list:
+    return execute_sql(query, params).fetchall()
+
+
+def fetch_one(query: str, params: tuple = ()):
+    return execute_sql(query, params).fetchone()
+
+
+def commit_db() -> None:
+    get_db().commit()
+
+
+def rollback_db() -> None:
+    get_db().rollback()
+
+
+def execute_write(query: str, params: tuple = (), *, commit: bool = True) -> int:
+    cursor = execute_sql(query, params)
+    if commit:
+        commit_db()
+    return cursor.rowcount
 
 
 def execute_sql_file(connection: sqlite3.Connection, path: Path) -> None:
@@ -122,27 +194,16 @@ def init_database(force: bool = False) -> None:
 
 
 def ensure_database() -> None:
-    if not DATABASE_PATH.exists():
+    if not is_postgres() and not DATABASE_PATH.exists():
         init_database()
 
 
-def fetch_all(query: str, params: tuple = ()) -> list[sqlite3.Row]:
-    return get_db().execute(query, params).fetchall()
-
-
 def get_dashboard_stats() -> dict[str, str]:
-    db = get_db()
-    total_items = db.execute("SELECT COUNT(*) AS count FROM item").fetchone()["count"]
-    unsold_items = db.execute(
-        "SELECT COUNT(*) AS count FROM item WHERE status = 0"
-    ).fetchone()["count"]
-    total_orders = db.execute(
-        "SELECT COUNT(*) AS count FROM orders"
-    ).fetchone()["count"]
-    total_users = db.execute("SELECT COUNT(*) AS count FROM user").fetchone()["count"]
-    average_price = db.execute(
-        "SELECT ROUND(AVG(price), 2) AS value FROM item"
-    ).fetchone()["value"]
+    total_items = fetch_one("SELECT COUNT(*) AS count FROM item")["count"]
+    unsold_items = fetch_one("SELECT COUNT(*) AS count FROM item WHERE status = 0")["count"]
+    total_orders = fetch_one("SELECT COUNT(*) AS count FROM orders")["count"]
+    total_users = fetch_one('SELECT COUNT(*) AS count FROM "user"')["count"]
+    average_price = fetch_one("SELECT ROUND(AVG(price), 2) AS value FROM item")["value"]
     return {
         "商品总数": str(total_items),
         "未售商品": str(unsold_items),
@@ -152,7 +213,7 @@ def get_dashboard_stats() -> dict[str, str]:
     }
 
 
-def get_items_with_seller() -> list[sqlite3.Row]:
+def get_items_with_seller() -> list:
     return fetch_all(
         """
         SELECT
@@ -164,13 +225,13 @@ def get_items_with_seller() -> list[sqlite3.Row]:
             i.seller_id,
             u.user_name AS seller_name
         FROM item AS i
-        JOIN user AS u ON u.user_id = i.seller_id
+        JOIN "user" AS u ON u.user_id = i.seller_id
         ORDER BY i.item_id
         """
     )
 
 
-def get_order_details() -> list[sqlite3.Row]:
+def get_order_details() -> list:
     return fetch_all(
         """
         SELECT
@@ -182,7 +243,7 @@ def get_order_details() -> list[sqlite3.Row]:
             o.order_date
         FROM orders AS o
         JOIN item AS i ON i.item_id = o.item_id
-        JOIN user AS u ON u.user_id = o.buyer_id
+        JOIN "user" AS u ON u.user_id = o.buyer_id
         ORDER BY o.order_date, o.order_id
         """
     )
@@ -192,7 +253,7 @@ def get_query_definitions() -> list[dict[str, object]]:
     return [
         {
             "id": "basic1",
-            "title": "基本查询 1：所有未售出的商品",
+            "title": "Basic query 1: all unsold items",
             "sql": """SELECT item_id, item_name, category, price, seller_id
 FROM item
 WHERE status = 0
@@ -201,7 +262,7 @@ ORDER BY item_id;""",
         },
         {
             "id": "basic2",
-            "title": "基本查询 2：价格大于 30 的商品",
+            "title": "Basic query 2: items priced over 30",
             "sql": """SELECT item_id, item_name, price
 FROM item
 WHERE price > 30
@@ -210,7 +271,7 @@ ORDER BY price DESC, item_id;""",
         },
         {
             "id": "basic3",
-            "title": "基本查询 3：生活用品类商品",
+            "title": "Basic query 3: DailyGoods items",
             "sql": """SELECT item_id, item_name, category, price
 FROM item
 WHERE category = 'DailyGoods'
@@ -219,7 +280,7 @@ ORDER BY item_id;""",
         },
         {
             "id": "basic4",
-            "title": "基本查询 4：u001 发布的所有商品",
+            "title": "Basic query 4: all items sold by u001",
             "sql": """SELECT item_id, item_name, category, price, status
 FROM item
 WHERE seller_id = 'u001'
@@ -228,7 +289,7 @@ ORDER BY item_id;""",
         },
         {
             "id": "join1",
-            "title": "连接查询 1：所有已售商品及其买家姓名",
+            "title": "Join query 1: sold items and buyer names",
             "sql": """SELECT
     i.item_id,
     i.item_name,
@@ -236,14 +297,14 @@ ORDER BY item_id;""",
     u.user_name AS buyer_name
 FROM item AS i
 JOIN orders AS o ON o.item_id = i.item_id
-JOIN user AS u ON u.user_id = o.buyer_id
+JOIN "user" AS u ON u.user_id = o.buyer_id
 WHERE i.status = 1
 ORDER BY i.item_id;""",
             "columns": ["item_id", "item_name", "buyer_id", "buyer_name"],
         },
         {
             "id": "join2",
-            "title": "连接查询 2：每个订单的商品名、买家名和日期",
+            "title": "Join query 2: order item, buyer, and date",
             "sql": """SELECT
     o.order_id,
     i.item_name,
@@ -251,19 +312,19 @@ ORDER BY i.item_id;""",
     o.order_date
 FROM orders AS o
 JOIN item AS i ON i.item_id = o.item_id
-JOIN user AS u ON u.user_id = o.buyer_id
+JOIN "user" AS u ON u.user_id = o.buyer_id
 ORDER BY o.order_date, o.order_id;""",
             "columns": ["order_id", "item_name", "buyer_name", "order_date"],
         },
         {
             "id": "join3",
-            "title": "连接查询 3：卖家为 u001 的商品是否被购买",
+            "title": "Join query 3: whether u001 items were purchased",
             "sql": """SELECT
     i.item_id,
     i.item_name,
     CASE
-        WHEN o.order_id IS NULL THEN '否'
-        ELSE '是'
+        WHEN o.order_id IS NULL THEN 'No'
+        ELSE 'Yes'
     END AS is_purchased,
     COALESCE(o.buyer_id, '-') AS buyer_id
 FROM item AS i
@@ -274,13 +335,13 @@ ORDER BY i.item_id;""",
         },
         {
             "id": "agg1",
-            "title": "聚合 1：商品总数",
+            "title": "Aggregate 1: item count",
             "sql": """SELECT COUNT(*) AS total_items FROM item;""",
             "columns": ["total_items"],
         },
         {
             "id": "agg2",
-            "title": "聚合 2：每类商品数量",
+            "title": "Aggregate 2: item count by category",
             "sql": """SELECT category, COUNT(*) AS item_count
 FROM item
 GROUP BY category
@@ -289,18 +350,18 @@ ORDER BY category;""",
         },
         {
             "id": "agg3",
-            "title": "聚合 3：所有商品平均价格",
+            "title": "Aggregate 3: average item price",
             "sql": """SELECT ROUND(AVG(price), 2) AS average_price FROM item;""",
             "columns": ["average_price"],
         },
         {
             "id": "agg4",
-            "title": "聚合 4：发布商品数量最多的用户",
+            "title": "Aggregate 4: user with most listed items",
             "sql": """SELECT
     u.user_id,
     u.user_name,
     COUNT(i.item_id) AS item_count
-FROM user AS u
+FROM "user" AS u
 LEFT JOIN item AS i ON i.seller_id = u.user_id
 GROUP BY u.user_id, u.user_name
 ORDER BY item_count DESC, u.user_id
@@ -309,7 +370,7 @@ LIMIT 1;""",
         },
         {
             "id": "view1",
-            "title": "视图 1：已售商品视图",
+            "title": "View 1: sold items view",
             "sql": """SELECT item_id, item_name, buyer_id
 FROM sold_items_view
 ORDER BY item_id;""",
@@ -317,7 +378,7 @@ ORDER BY item_id;""",
         },
         {
             "id": "view2",
-            "title": "视图 2：未售商品视图",
+            "title": "View 2: unsold items view",
             "sql": """SELECT item_id, item_name, category, price, seller_id
 FROM unsold_items_view
 ORDER BY item_id;""",
@@ -327,31 +388,46 @@ ORDER BY item_id;""",
 
 
 def execute_safe_query(sql: str) -> dict[str, object]:
-    upper_sql = sql.strip().upper()
+    stripped_sql = sql.strip()
+    query_without_trailing_semicolon = stripped_sql.rstrip(";").strip()
+    upper_sql = query_without_trailing_semicolon.upper()
+
+    if ";" in query_without_trailing_semicolon:
+        raise ValueError("Only one SELECT statement is allowed.")
+
     forbidden_keywords = [
-        "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE",
-        "TRUNCATE", "REPLACE", "ATTACH", "DETACH", "PRAGMA",
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "ALTER",
+        "CREATE",
+        "TRUNCATE",
+        "REPLACE",
+        "ATTACH",
+        "DETACH",
+        "PRAGMA",
         "LOAD_EXTENSION",
     ]
     for keyword in forbidden_keywords:
-        if keyword in upper_sql:
-            raise ValueError(f"禁止执行包含 {keyword} 的语句，只允许 SELECT 查询。")
+        if re.search(rf"\b{keyword}\b", upper_sql):
+            raise ValueError(f"Statements containing {keyword} are not allowed; use SELECT only.")
 
     if not upper_sql.startswith("SELECT"):
-        raise ValueError("只允许执行 SELECT 查询语句。")
+        raise ValueError("Only SELECT statements are allowed.")
 
-    db = get_db()
     try:
-        cursor = db.execute(sql)
+        cursor = execute_sql(query_without_trailing_semicolon)
         rows = cursor.fetchall()
         columns = [desc[0] for desc in cursor.description] if cursor.description else []
         return {"columns": columns, "rows": rows}
-    except sqlite3.Error as exc:
-        raise ValueError(f"SQL 执行错误：{exc}")
+    except (sqlite3.Error, Exception) as exc:
+        rollback_db()
+        raise ValueError(f"SQL execution failed: {exc}") from exc
 
 
-def generate_order_id(db: sqlite3.Connection) -> str:
-    rows = db.execute("SELECT order_id FROM orders").fetchall()
+def generate_order_id() -> str:
+    rows = fetch_all("SELECT order_id FROM orders")
     max_number = 0
     for row in rows:
         digits = "".join(ch for ch in row["order_id"] if ch.isdigit())
@@ -363,34 +439,101 @@ def generate_order_id(db: sqlite3.Connection) -> str:
 def purchase_item(item_id: str, buyer_id: str, order_id: str, order_date: str) -> None:
     db = get_db()
     try:
-        db.execute("BEGIN IMMEDIATE")
-        item = db.execute(
-            "SELECT item_id, status FROM item WHERE item_id = ?",
-            (item_id,),
-        ).fetchone()
-        if item is None:
-            raise ValueError("商品不存在。")
-        if item["status"] == 1:
-            raise ValueError("该商品已售出，不能重复购买。")
+        if not is_postgres():
+            db.execute("BEGIN IMMEDIATE")
 
-        updated = db.execute(
+        item = fetch_one("SELECT item_id, status FROM item WHERE item_id = ?", (item_id,))
+        if item is None:
+            raise ValueError("Item does not exist.")
+        if item["status"] == 1:
+            raise ValueError("Item is already sold.")
+
+        updated = execute_write(
             "UPDATE item SET status = 1 WHERE item_id = ? AND status = 0",
             (item_id,),
+            commit=False,
         )
-        if updated.rowcount != 1:
-            raise ValueError("商品状态更新失败。")
+        if updated != 1:
+            raise ValueError("Item status update failed.")
 
-        db.execute(
+        execute_write(
             """
             INSERT INTO orders (order_id, item_id, buyer_id, order_date)
             VALUES (?, ?, ?, ?)
             """,
             (order_id, item_id, buyer_id, order_date),
+            commit=False,
         )
-        db.commit()
+        commit_db()
     except Exception:
-        db.rollback()
+        rollback_db()
         raise
+
+
+def reset_postgres_data() -> None:
+    try:
+        execute_write("DELETE FROM orders", commit=False)
+        execute_write("DELETE FROM item", commit=False)
+        execute_write('DELETE FROM "user"', commit=False)
+        for user in SEED_USERS:
+            execute_write(
+                'INSERT INTO "user" (user_id, user_name, phone) VALUES (?, ?, ?)',
+                user,
+                commit=False,
+            )
+        for item in SEED_ITEMS:
+            execute_write(
+                """
+                INSERT INTO item (item_id, item_name, category, price, status, seller_id)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                item,
+                commit=False,
+            )
+        for order in SEED_ORDERS:
+            execute_write(
+                """
+                INSERT INTO orders (order_id, item_id, buyer_id, order_date)
+                VALUES (?, ?, ?, ?)
+                """,
+                order,
+                commit=False,
+            )
+        commit_db()
+    except Exception:
+        rollback_db()
+        raise
+
+
+def get_local_ip() -> str:
+    try:
+        with closing(socket.socket(socket.AF_INET, socket.SOCK_DGRAM)) as sock:
+            sock.connect(("8.8.8.8", 80))
+            return sock.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+
+
+def generate_qr_image_base64(url: str) -> str:
+    image = qrcode.make(url)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
+def generate_qr_ascii(url: str) -> str:
+    qr = qrcode.QRCode(border=1)
+    qr.add_data(url)
+    qr.make(fit=True)
+    return "\n".join(
+        "".join("  " if cell else "##" for cell in row)
+        for row in qr.get_matrix()
+    )
+
+
+def open_browser_later(url: str) -> None:
+    threading.Timer(1.0, lambda: webbrowser.open(url)).start()
 
 
 @app.before_request
@@ -399,7 +542,6 @@ def ensure_database_before_request() -> None:
 
 
 def reset_query_results() -> None:
-    """切换页面时重置查询结果"""
     global query_results, custom_result, custom_error
     query_results = {}
     custom_result = None
@@ -424,7 +566,7 @@ def users():
     reset_query_results()
     return render_template(
         "users.html",
-        users=fetch_all("SELECT user_id, user_name, phone FROM user ORDER BY user_id"),
+        users=fetch_all('SELECT user_id, user_name, phone FROM "user" ORDER BY user_id'),
     )
 
 
@@ -436,23 +578,21 @@ def add_user():
 
     try:
         if not user_id:
-            raise ValueError("用户 ID 不能为空。")
-        if not user_id.startswith("u"):
-            raise ValueError("用户 ID 必须以 u 开头，如 u005。")
-        if not user_id[1:].isdigit():
-            raise ValueError("用户 ID 格式错误，应为 u + 数字，如 u005。")
+            raise ValueError("User ID cannot be empty.")
+        if not user_id.startswith("u") or not user_id[1:].isdigit():
+            raise ValueError("User ID must look like u005.")
         if not user_name:
-            raise ValueError("用户名不能为空。")
+            raise ValueError("User name cannot be empty.")
         validate_phone(phone)
 
-        get_db().execute(
-            "INSERT INTO user (user_id, user_name, phone) VALUES (?, ?, ?)",
+        execute_write(
+            'INSERT INTO "user" (user_id, user_name, phone) VALUES (?, ?, ?)',
             (user_id, user_name, phone),
         )
-        get_db().commit()
-        flash(f"用户 {user_id} ({user_name}) 已成功新增。", "success")
-    except (sqlite3.IntegrityError, ValueError) as exc:
-        flash(f"新增失败：{exc}", "error")
+        flash(f"User {user_id} ({user_name}) was added.", "success")
+    except Exception as exc:
+        rollback_db()
+        flash(f"Add failed: {exc}", "error")
     return redirect(url_for("users"))
 
 
@@ -463,20 +603,20 @@ def update_user_phone():
 
     try:
         if not user_id:
-            raise ValueError("用户 ID 不能为空。")
+            raise ValueError("User ID cannot be empty.")
         validate_phone(phone)
 
-        cursor = get_db().execute(
-            "UPDATE user SET phone = ? WHERE user_id = ?",
+        updated = execute_write(
+            'UPDATE "user" SET phone = ? WHERE user_id = ?',
             (phone, user_id),
         )
-        get_db().commit()
-        if cursor.rowcount == 0:
-            flash("修改失败：用户不存在。", "error")
+        if updated == 0:
+            flash("Update failed: user does not exist.", "error")
         else:
-            flash(f"用户 {user_id} 的手机号已更新。", "success")
-    except (sqlite3.IntegrityError, ValueError) as exc:
-        flash(f"修改失败：{exc}", "error")
+            flash(f"User {user_id} phone was updated.", "success")
+    except Exception as exc:
+        rollback_db()
+        flash(f"Update failed: {exc}", "error")
     return redirect(url_for("users"))
 
 
@@ -486,36 +626,36 @@ def delete_user():
 
     try:
         if not user_id:
-            raise ValueError("用户 ID 不能为空。")
+            raise ValueError("User ID cannot be empty.")
 
-        db = get_db()
-        # 检查用户是否有关联的商品或订单
-        item_count = db.execute(
-            "SELECT COUNT(*) as cnt FROM item WHERE seller_id = ?",
+        item_count = fetch_one(
+            "SELECT COUNT(*) AS count FROM item WHERE seller_id = ?",
             (user_id,),
-        ).fetchone()["cnt"]
-        order_count = db.execute(
-            "SELECT COUNT(*) as cnt FROM orders WHERE buyer_id = ?",
+        )["count"]
+        order_count = fetch_one(
+            "SELECT COUNT(*) AS count FROM orders WHERE buyer_id = ?",
             (user_id,),
-        ).fetchone()["cnt"]
-
+        )["count"]
         if item_count > 0:
-            raise ValueError(f"该用户发布了 {item_count} 件商品，无法删除。")
+            raise ValueError(f"User has {item_count} listed item(s).")
         if order_count > 0:
-            raise ValueError(f"该用户有 {order_count} 个订单，无法删除。")
+            raise ValueError(f"User has {order_count} order(s).")
 
-        db.execute("DELETE FROM user WHERE user_id = ?", (user_id,))
-        db.commit()
-        flash(f"用户 {user_id} 已删除。", "success")
-    except (sqlite3.IntegrityError, ValueError) as exc:
-        flash(f"删除失败：{exc}", "error")
+        deleted = execute_write('DELETE FROM "user" WHERE user_id = ?', (user_id,))
+        if deleted == 0:
+            flash("Delete failed: user does not exist.", "error")
+        else:
+            flash(f"User {user_id} was deleted.", "success")
+    except Exception as exc:
+        rollback_db()
+        flash(f"Delete failed: {exc}", "error")
     return redirect(url_for("users"))
 
 
 @app.route("/items")
 def items():
     reset_query_results()
-    users_list = fetch_all("SELECT user_id, user_name FROM user ORDER BY user_id")
+    users_list = fetch_all('SELECT user_id, user_name FROM "user" ORDER BY user_id')
     items_list = get_items_with_seller()
     unsold_items = [row for row in items_list if row["status"] == 0]
     return render_template(
@@ -523,48 +663,44 @@ def items():
         items=items_list,
         users=users_list,
         unsold_items=unsold_items,
-        suggested_order_id=generate_order_id(get_db()),
+        suggested_order_id=generate_order_id(),
         today=date.today().isoformat(),
     )
 
 
 def validate_item_id(item_id: str) -> None:
     if not item_id:
-        raise ValueError("商品 ID 不能为空。")
-    if not item_id.startswith("i"):
-        raise ValueError("商品 ID 必须以 i 开头，如 i001。")
-    if not item_id[1:].isdigit():
-        raise ValueError("商品 ID 格式错误，应为 i + 数字，如 i001。")
+        raise ValueError("Item ID cannot be empty.")
+    if not item_id.startswith("i") or not item_id[1:].isdigit():
+        raise ValueError("Item ID must look like i001.")
 
 
 def validate_order_id(order_id: str) -> None:
     if not order_id:
-        raise ValueError("订单 ID 不能为空。")
-    if not order_id.startswith("o"):
-        raise ValueError("订单 ID 必须以 o 开头，如 o001。")
-    if not order_id[1:].isdigit():
-        raise ValueError("订单 ID 格式错误，应为 o + 数字，如 o001。")
+        raise ValueError("Order ID cannot be empty.")
+    if not order_id.startswith("o") or not order_id[1:].isdigit():
+        raise ValueError("Order ID must look like o001.")
 
 
 def validate_price(price_str: str) -> float:
     try:
         price = float(price_str)
-    except ValueError:
-        raise ValueError("价格必须是有效数字。")
+    except ValueError as exc:
+        raise ValueError("Price must be a valid number.") from exc
     if price < 0:
-        raise ValueError("价格不能为负数。")
+        raise ValueError("Price cannot be negative.")
     if price > 999999.99:
-        raise ValueError("价格超出允许范围（最大 999999.99）。")
+        raise ValueError("Price is too large.")
     return price
 
 
 def validate_phone(phone: str) -> None:
     if not phone:
-        raise ValueError("手机号不能为空。")
+        raise ValueError("Phone number cannot be empty.")
     if not phone.isdigit():
-        raise ValueError("手机号只能包含数字。")
+        raise ValueError("Phone number must contain digits only.")
     if len(phone) != 11:
-        raise ValueError("手机号必须为 11 位数字。")
+        raise ValueError("Phone number must be 11 digits.")
 
 
 @app.post("/items/add")
@@ -578,28 +714,26 @@ def add_item():
     try:
         validate_item_id(item_id)
         if not item_name:
-            raise ValueError("商品名称不能为空。")
+            raise ValueError("Item name cannot be empty.")
         if not category:
-            raise ValueError("商品分类不能为空。")
+            raise ValueError("Category cannot be empty.")
         price = validate_price(price_str)
 
-        db = get_db()
-        # 验证用户是否存在
-        user = db.execute("SELECT user_id FROM user WHERE user_id = ?", (seller_id,)).fetchone()
+        user = fetch_one('SELECT user_id FROM "user" WHERE user_id = ?', (seller_id,))
         if user is None:
-            raise ValueError(f"卖家 {seller_id} 不存在，请先前往用户列表新增用户。")
+            raise ValueError(f"Seller {seller_id} does not exist.")
 
-        db.execute(
+        execute_write(
             """
             INSERT INTO item (item_id, item_name, category, price, status, seller_id)
             VALUES (?, ?, ?, ?, 0, ?)
             """,
             (item_id, item_name, category, price, seller_id),
         )
-        db.commit()
-        flash(f"商品 {item_id} 已成功新增。", "success")
-    except (sqlite3.IntegrityError, ValueError) as exc:
-        flash(f"新增失败：{exc}", "error")
+        flash(f"Item {item_id} was added.", "success")
+    except Exception as exc:
+        rollback_db()
+        flash(f"Add failed: {exc}", "error")
     return redirect(url_for("items"))
 
 
@@ -612,17 +746,17 @@ def update_price():
         validate_item_id(item_id)
         price = validate_price(price_str)
 
-        cursor = get_db().execute(
+        updated = execute_write(
             "UPDATE item SET price = ? WHERE item_id = ?",
             (price, item_id),
         )
-        get_db().commit()
-        if cursor.rowcount == 0:
-            flash("改价失败：商品不存在。", "error")
+        if updated == 0:
+            flash("Price update failed: item does not exist.", "error")
         else:
-            flash(f"商品 {item_id} 的价格已更新。", "success")
-    except (sqlite3.IntegrityError, ValueError) as exc:
-        flash(f"改价失败：{exc}", "error")
+            flash(f"Item {item_id} price was updated.", "success")
+    except Exception as exc:
+        rollback_db()
+        flash(f"Price update failed: {exc}", "error")
     return redirect(url_for("items"))
 
 
@@ -631,25 +765,17 @@ def delete_item():
     item_id = request.form["item_id"].strip()
     try:
         validate_item_id(item_id)
-    except ValueError as exc:
-        flash(f"删除失败：{exc}", "error")
-        return redirect(url_for("items"))
+        item = fetch_one("SELECT status FROM item WHERE item_id = ?", (item_id,))
+        if item is None:
+            raise ValueError("Item does not exist.")
+        if item["status"] == 1:
+            raise ValueError("Sold items cannot be deleted.")
 
-    db = get_db()
-    item = db.execute(
-        "SELECT status FROM item WHERE item_id = ?",
-        (item_id,),
-    ).fetchone()
-    if item is None:
-        flash("删除失败：商品不存在。", "error")
-        return redirect(url_for("items"))
-    if item["status"] == 1:
-        flash("删除失败：已售商品不能删除。", "error")
-        return redirect(url_for("items"))
-
-    db.execute("DELETE FROM item WHERE item_id = ?", (item_id,))
-    db.commit()
-    flash(f"商品 {item_id} 已删除。", "success")
+        execute_write("DELETE FROM item WHERE item_id = ?", (item_id,))
+        flash(f"Item {item_id} was deleted.", "success")
+    except Exception as exc:
+        rollback_db()
+        flash(f"Delete failed: {exc}", "error")
     return redirect(url_for("items"))
 
 
@@ -657,26 +783,25 @@ def delete_item():
 def buy_item():
     item_id = request.form["item_id"].strip()
     buyer_id = request.form["buyer_id"].strip()
-    order_id = request.form["order_id"].strip() or generate_order_id(get_db())
+    order_id = request.form["order_id"].strip() or generate_order_id()
     order_date = request.form["order_date"].strip() or date.today().isoformat()
 
     try:
         validate_item_id(item_id)
         validate_order_id(order_id)
 
-        db = get_db()
-        # 验证买家是否存在
-        user = db.execute("SELECT user_id FROM user WHERE user_id = ?", (buyer_id,)).fetchone()
+        user = fetch_one('SELECT user_id FROM "user" WHERE user_id = ?', (buyer_id,))
         if user is None:
-            raise ValueError(f"买家 {buyer_id} 不存在，请先前往用户列表新增用户。")
+            raise ValueError(f"Buyer {buyer_id} does not exist.")
 
         purchase_item(item_id, buyer_id, order_id, order_date)
         flash(
-            f"购买成功：订单 {order_id} 已创建，商品 {item_id} 已标记为已售出。",
+            f"Purchase succeeded: order {order_id} was created and item {item_id} was marked sold.",
             "success",
         )
-    except (sqlite3.IntegrityError, ValueError) as exc:
-        flash(f"购买失败：{exc}", "error")
+    except Exception as exc:
+        rollback_db()
+        flash(f"Purchase failed: {exc}", "error")
     return redirect(url_for("items"))
 
 
@@ -689,37 +814,27 @@ def orders():
 @app.post("/orders/delete")
 def delete_order():
     order_id = request.form["order_id"].strip()
-    item_id = request.form["item_id"].strip()
 
     try:
         if not order_id:
-            raise ValueError("订单 ID 不能为空。")
+            raise ValueError("Order ID cannot be empty.")
 
         db = get_db()
-        # 验证订单是否存在
-        order = db.execute(
-            "SELECT order_id, item_id FROM orders WHERE order_id = ?",
-            (order_id,),
-        ).fetchone()
+        if not is_postgres():
+            db.execute("BEGIN IMMEDIATE")
+
+        order = fetch_one("SELECT order_id, item_id FROM orders WHERE order_id = ?", (order_id,))
         if order is None:
-            raise ValueError("订单不存在。")
+            raise ValueError("Order does not exist.")
 
-        # 显式事务：删除订单并恢复商品状态
-        db.execute("BEGIN IMMEDIATE")
-        try:
-            db.execute("DELETE FROM orders WHERE order_id = ?", (order_id,))
-            db.execute(
-                "UPDATE item SET status = 0 WHERE item_id = ?",
-                (item_id,),
-            )
-            db.commit()
-        except Exception:
-            db.rollback()
-            raise
-
-        flash(f"订单 {order_id} 已删除，商品 {item_id} 已恢复为未售状态。", "success")
-    except (sqlite3.IntegrityError, ValueError) as exc:
-        flash(f"删除失败：{exc}", "error")
+        item_id = order["item_id"]
+        execute_write("DELETE FROM orders WHERE order_id = ?", (order_id,), commit=False)
+        execute_write("UPDATE item SET status = 0 WHERE item_id = ?", (item_id,), commit=False)
+        commit_db()
+        flash(f"Order {order_id} was deleted and item {item_id} was marked unsold.", "success")
+    except Exception as exc:
+        rollback_db()
+        flash(f"Delete failed: {exc}", "error")
     return redirect(url_for("orders"))
 
 
@@ -746,7 +861,7 @@ def run_preset_query():
     definitions = get_query_definitions()
     target = next((q for q in definitions if q["id"] == query_id), None)
     if target is None:
-        flash("查询不存在。", "error")
+        flash("Query does not exist.", "error")
         return redirect(url_for("queries"))
 
     try:
@@ -770,7 +885,7 @@ def run_custom_query():
     custom_sql = request.form.get("custom_sql", "").strip()
     definitions = get_query_definitions()
     if not custom_sql:
-        flash("请输入 SQL 语句。", "error")
+        flash("Please enter a SQL statement.", "error")
         return redirect(url_for("queries"))
 
     try:
@@ -799,9 +914,16 @@ def run_custom_query():
 
 @app.post("/reset")
 def reset_database():
-    close_db(None)
-    init_database(force=True)
-    flash("数据库已重置为初始数据。", "success")
+    try:
+        if is_postgres():
+            reset_postgres_data()
+        else:
+            close_db(None)
+            init_database(force=True)
+        flash("Database was reset to the initial seed data.", "success")
+    except Exception as exc:
+        rollback_db()
+        flash(f"Reset failed: {exc}", "error")
     return redirect(url_for("index"))
 
 
@@ -810,14 +932,13 @@ if __name__ == "__main__":
     local_ip = get_local_ip()
     lan_url = f"http://{local_ip}:5000"
     open_browser_later("http://127.0.0.1:5000")
-    print("校园二手交易平台数据库系统已启动")
+    print("SecondHandSQL is running")
     print("=" * 60)
-    print("本机访问: http://127.0.0.1:5000")
-    print(f"局域网访问: {lan_url}")
-    print(f"运行目录: {RUNTIME_DIR}")
+    print("Local: http://127.0.0.1:5000")
+    print(f"LAN: {lan_url}")
+    print(f"Runtime directory: {RUNTIME_DIR}")
     print("=" * 60)
-    print("\n手机扫码访问（局域网）:")
+    print("\nScan for LAN access:")
     print(generate_qr_ascii(lan_url))
-    print("\n提示：如果手机无法访问，请检查 Windows 防火墙是否允许 5000 端口")
     print("=" * 60)
     app.run(host="0.0.0.0", port=5000, debug=False)

@@ -1,10 +1,13 @@
-/.sixth
-/.trae
+%APPDATA%/
 .env.local
 .env.*.local
+.git/
+.sixth/
+.trae/
 __pycache__/
 *.pyc
 *.db
-%APPDATA%/
 build/
 dist/
+docs/
+secondhandsql.spec
