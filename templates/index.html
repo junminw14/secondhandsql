@@ -27,9 +27,11 @@
         <img src="{{ qr_image }}" alt="局域网二维码">
         <p class="muted">手机扫码访问</p>
     </div>
+    {% if is_admin %}
     <form action="{{ url_for('reset_database') }}" method="post">
         <button class="button button-danger" type="submit">重置数据库</button>
     </form>
+    {% endif %}
 </section>
 
 <section class="stats-grid">

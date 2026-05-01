@@ -5,9 +5,10 @@
 {% block content %}
 <section class="page-head">
     <h2>商品列表与数据操作</h2>
-    <p>这里直接对 SQLite 数据库执行新增、购买、改价和删除操作，刷新后可看到结果变化。</p>
+    <p>未登录时只能查看商品数据，root 登录后可以新增、购买、改价和删除未售商品。</p>
 </section>
 
+{% if is_admin %}
 <section class="operations-vertical">
     <article class="card operation-card">
         <h3>新增商品</h3>
@@ -48,7 +49,6 @@
             <pre><code id="add_sql">INSERT INTO item (item_id, item_name, category, price, status, seller_id)
 VALUES ('', '', '', 0.00, 0, '');</code></pre>
         </div>
-        <p class="muted" style="margin-top:8px;font-size:0.85rem;">如需新增用户，请前往 <a href="{{ url_for('users') }}">用户列表</a> 操作。</p>
     </article>
 
     <article class="card operation-card">
@@ -93,7 +93,6 @@ INSERT INTO orders (order_id, item_id, buyer_id, order_date)
 VALUES ('', '', '', '');
 COMMIT;</code></pre>
         </div>
-        <p class="muted" style="margin-top:8px;font-size:0.85rem;">如需新增用户，请前往 <a href="{{ url_for('users') }}">用户列表</a> 操作。</p>
     </article>
 
     <article class="card operation-card">
@@ -144,6 +143,7 @@ COMMIT;</code></pre>
         </div>
     </article>
 </section>
+{% endif %}
 
 <section class="card">
     <h3>商品数据</h3>
@@ -179,6 +179,7 @@ COMMIT;</code></pre>
     </table>
 </section>
 
+{% if is_admin %}
 <script>
 function updateAddSql() {
     const itemId = document.getElementById('add_item_id').value || '';
@@ -212,10 +213,10 @@ function updateBuySql() {
     document.getElementById('buy_sql').textContent = sql;
 }
 
-// 初始化显示
 updateAddSql();
 updateUpdateSql();
 updateDeleteSql();
 updateBuySql();
 </script>
+{% endif %}
 {% endblock %}

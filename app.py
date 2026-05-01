@@ -11,12 +11,14 @@ import threading
 import webbrowser
 from contextlib import closing
 from datetime import date
+from functools import wraps
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import qrcode
 from dotenv import load_dotenv
-from flask import Flask, flash, g, redirect, render_template, request, url_for
+
+from flask import Flask, flash, g, redirect, render_template, request, session, url_for
 
 try:
     import psycopg
@@ -76,6 +78,29 @@ app = Flask(
 )
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "secondhandsql-demo-secret")
 app.config["TEMPLATES_AUTO_RELOAD"] = True
+
+ADMIN_USERNAME = "root"
+ADMIN_PASSWORD = "123456"
+
+
+def is_admin() -> bool:
+    return session.get("is_admin") is True
+
+
+def admin_required(view):
+    @wraps(view)
+    def wrapped_view(*args, **kwargs):
+        if not is_admin():
+            flash("Only root can modify data. Other users can only query.", "error")
+            return redirect(request.referrer or url_for("index"))
+        return view(*args, **kwargs)
+
+    return wrapped_view
+
+
+@app.context_processor
+def inject_auth_state() -> dict[str, object]:
+    return {"is_admin": is_admin(), "admin_username": ADMIN_USERNAME}
 
 
 def sanitize_postgres_dsn(dsn: str) -> str:
@@ -561,6 +586,26 @@ def index():
     )
 
 
+@app.post("/login")
+def login():
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "")
+    if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+        session["is_admin"] = True
+        flash("Logged in as root. Write operations are enabled.", "success")
+    else:
+        session.pop("is_admin", None)
+        flash("Login failed: username or password is incorrect.", "error")
+    return redirect(request.referrer or url_for("index"))
+
+
+@app.post("/logout")
+def logout():
+    session.pop("is_admin", None)
+    flash("Logged out. The site is now read-only.", "success")
+    return redirect(request.referrer or url_for("index"))
+
+
 @app.route("/users")
 def users():
     reset_query_results()
@@ -571,6 +616,7 @@ def users():
 
 
 @app.post("/users/add")
+@admin_required
 def add_user():
     user_id = request.form["user_id"].strip()
     user_name = request.form["user_name"].strip()
@@ -597,6 +643,7 @@ def add_user():
 
 
 @app.post("/users/update-phone")
+@admin_required
 def update_user_phone():
     user_id = request.form["user_id"].strip()
     phone = request.form["phone"].strip()
@@ -621,6 +668,7 @@ def update_user_phone():
 
 
 @app.post("/users/delete")
+@admin_required
 def delete_user():
     user_id = request.form["user_id"].strip()
 
@@ -704,6 +752,7 @@ def validate_phone(phone: str) -> None:
 
 
 @app.post("/items/add")
+@admin_required
 def add_item():
     item_id = request.form["item_id"].strip()
     item_name = request.form["item_name"].strip()
@@ -738,6 +787,7 @@ def add_item():
 
 
 @app.post("/items/update-price")
+@admin_required
 def update_price():
     item_id = request.form["item_id"].strip()
     price_str = request.form["price"].strip()
@@ -761,6 +811,7 @@ def update_price():
 
 
 @app.post("/items/delete")
+@admin_required
 def delete_item():
     item_id = request.form["item_id"].strip()
     try:
@@ -780,6 +831,7 @@ def delete_item():
 
 
 @app.post("/items/purchase")
+@admin_required
 def buy_item():
     item_id = request.form["item_id"].strip()
     buyer_id = request.form["buyer_id"].strip()
@@ -812,6 +864,7 @@ def orders():
 
 
 @app.post("/orders/delete")
+@admin_required
 def delete_order():
     order_id = request.form["order_id"].strip()
 
@@ -913,6 +966,7 @@ def run_custom_query():
 
 
 @app.post("/reset")
+@admin_required
 def reset_database():
     try:
         if is_postgres():

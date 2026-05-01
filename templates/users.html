@@ -5,9 +5,10 @@
 {% block content %}
 <section class="page-head">
     <h2>用户列表</h2>
-    <p>展示和管理 user 表中的用户数据，支持新增、修改手机号和删除用户。</p>
+    <p>展示 user 表中的用户数据。未登录时只能查看，root 登录后可以新增、修改手机号和删除用户。</p>
 </section>
 
+{% if is_admin %}
 <section class="card operation-card">
     <h3>新增用户</h3>
     <form class="form-compact" action="{{ url_for('add_user') }}" method="post">
@@ -30,9 +31,10 @@
         </div>
     </form>
     <div class="sql-preview">
-        <pre><code>INSERT INTO user (user_id, user_name, phone) VALUES ('', '', '');</code></pre>
+        <pre><code>INSERT INTO "user" (user_id, user_name, phone) VALUES ('', '', '');</code></pre>
     </div>
 </section>
+{% endif %}
 
 <section class="card">
     <h3>用户数据</h3>
@@ -42,7 +44,7 @@
                 <th>用户 ID</th>
                 <th>用户名</th>
                 <th>手机号</th>
-                <th>操作</th>
+                {% if is_admin %}<th>操作</th>{% endif %}
             </tr>
         </thead>
         <tbody>
@@ -51,6 +53,7 @@
                 <td>{{ user.user_id }}</td>
                 <td>{{ user.user_name }}</td>
                 <td>
+                    {% if is_admin %}
                     <form class="inline-form" action="{{ url_for('update_user_phone') }}" method="post"
                         style="display:flex;gap:8px;align-items:center;">
                         <input type="hidden" name="user_id" value="{{ user.user_id }}">
@@ -59,7 +62,11 @@
                         <button class="button button-secondary" type="submit"
                             style="min-height:32px;padding:0 12px;font-size:0.85rem;">修改</button>
                     </form>
+                    {% else %}
+                        {{ user.phone }}
+                    {% endif %}
                 </td>
+                {% if is_admin %}
                 <td>
                     <form class="inline-form" action="{{ url_for('delete_user') }}" method="post"
                         onsubmit="return confirm('确定要删除用户 {{ user.user_id }} 吗？');">
@@ -68,6 +75,7 @@
                             style="min-height:32px;padding:0 12px;font-size:0.85rem;">删除</button>
                     </form>
                 </td>
+                {% endif %}
             </tr>
             {% endfor %}
         </tbody>

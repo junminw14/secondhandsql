@@ -20,6 +20,20 @@
                 <a href="{{ url_for('orders') }}">订单</a>
                 <a href="{{ url_for('queries') }}">查询结果</a>
             </nav>
+            <div class="auth-box">
+                {% if is_admin %}
+                    <span class="auth-status">root</span>
+                    <form action="{{ url_for('logout') }}" method="post">
+                        <button class="button button-secondary" type="submit">退出</button>
+                    </form>
+                {% else %}
+                    <form class="auth-form" action="{{ url_for('login') }}" method="post">
+                        <input name="username" placeholder="root" required>
+                        <input name="password" type="password" placeholder="123456" required>
+                        <button class="button" type="submit">登录</button>
+                    </form>
+                {% endif %}
+            </div>
         </div>
     </header>
 

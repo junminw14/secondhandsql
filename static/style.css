@@ -91,6 +91,33 @@ a {
     border: 1px solid var(--line);
 }
 
+.auth-box,
+.auth-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.auth-box input {
+    width: 110px;
+    min-height: 34px;
+}
+
+.auth-box .button {
+    min-height: 34px;
+    padding: 0 12px;
+    font-size: 0.85rem;
+}
+
+.auth-status {
+    padding: 8px 12px;
+    border-radius: 999px;
+    color: var(--accent-strong);
+    background: rgba(15, 118, 110, 0.12);
+    font-weight: 700;
+}
+
 .page-content {
     padding: 28px 0 48px;
 }
@@ -483,6 +510,16 @@ thead th {
 
     .site-nav {
         width: 100%;
+    }
+
+    .auth-box,
+    .auth-form {
+        width: 100%;
+    }
+
+    .auth-box input {
+        width: auto;
+        flex: 1 1 120px;
     }
 
     .address-bar {
