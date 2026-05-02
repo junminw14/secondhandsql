@@ -5,11 +5,10 @@
 {% block content %}
 <section class="hero" style="grid-template-columns: 1fr; text-align: center; margin-bottom: 24px;">
     <div>
-        <p class="eyebrow">SQLite + Flask + Portable Launcher</p>
-        <h2 style="font-size: 1.8rem; margin-bottom: 10px;">一键启动、自动放行本机、手机扫码访问</h2>
+        <p class="eyebrow">SQLite + Flask + Vercel</p>
+        <h2 style="font-size: 1.8rem; margin-bottom: 10px;">校园二手交易平台数据库系统</h2>
         <p class="hero-text" style="max-width: 70ch; margin: 0 auto 16px;">
             项目已包含数据库约束、事务购买逻辑、基础查询、连接查询、聚合统计和视图。
-            打包版启动时会优先申请管理员权限，自动清理阻止规则并添加允许规则。
         </p>
         <div class="hero-actions" style="justify-content: center; margin-bottom: 4px;">
             <a class="button" href="{{ url_for('items') }}">进入商品页</a>
@@ -18,21 +17,13 @@
     </div>
 </section>
 
-<section class="address-bar">
-    <div class="address-info">
-        <p><strong>本机访问：</strong>http://127.0.0.1:5000</p>
-        <p><strong>局域网访问：</strong>http://{{ local_ip }}:5000</p>
-    </div>
-    <div class="qr-wrap">
-        <img src="{{ qr_image }}" alt="局域网二维码">
-        <p class="muted">手机扫码访问</p>
-    </div>
-    {% if is_admin %}
+{% if is_admin %}
+<section class="admin-actions">
     <form action="{{ url_for('reset_database') }}" method="post">
         <button class="button button-danger" type="submit">重置数据库</button>
     </form>
-    {% endif %}
 </section>
+{% endif %}
 
 <section class="stats-grid">
     {% for label, value in stats.items() %}

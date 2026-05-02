@@ -1,21 +1,16 @@
 from __future__ import annotations
 
-import base64
-import io
 import os
 import re
-import socket
 import sqlite3
 import sys
 import threading
 import webbrowser
-from contextlib import closing
 from datetime import date
 from functools import wraps
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-import qrcode
 from dotenv import load_dotenv
 
 from flask import Flask, flash, g, redirect, render_template, request, session, url_for
@@ -530,33 +525,6 @@ def reset_postgres_data() -> None:
         raise
 
 
-def get_local_ip() -> str:
-    try:
-        with closing(socket.socket(socket.AF_INET, socket.SOCK_DGRAM)) as sock:
-            sock.connect(("8.8.8.8", 80))
-            return sock.getsockname()[0]
-    except OSError:
-        return "127.0.0.1"
-
-
-def generate_qr_image_base64(url: str) -> str:
-    image = qrcode.make(url)
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-    return f"data:image/png;base64,{encoded}"
-
-
-def generate_qr_ascii(url: str) -> str:
-    qr = qrcode.QRCode(border=1)
-    qr.add_data(url)
-    qr.make(fit=True)
-    return "\n".join(
-        "".join("  " if cell else "##" for cell in row)
-        for row in qr.get_matrix()
-    )
-
-
 def open_browser_later(url: str) -> None:
     threading.Timer(1.0, lambda: webbrowser.open(url)).start()
 
@@ -576,13 +544,9 @@ def reset_query_results() -> None:
 @app.route("/")
 def index():
     reset_query_results()
-    local_ip = get_local_ip()
-    lan_url = f"http://{local_ip}:5000"
     return render_template(
         "index.html",
         stats=get_dashboard_stats(),
-        local_ip=local_ip,
-        qr_image=generate_qr_image_base64(lan_url),
     )
 
 
@@ -983,16 +947,10 @@ def reset_database():
 
 if __name__ == "__main__":
     ensure_database()
-    local_ip = get_local_ip()
-    lan_url = f"http://{local_ip}:5000"
     open_browser_later("http://127.0.0.1:5000")
     print("SecondHandSQL is running")
     print("=" * 60)
     print("Local: http://127.0.0.1:5000")
-    print(f"LAN: {lan_url}")
     print(f"Runtime directory: {RUNTIME_DIR}")
     print("=" * 60)
-    print("\nScan for LAN access:")
-    print(generate_qr_ascii(lan_url))
-    print("=" * 60)
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    app.run(host="127.0.0.1", port=5000, debug=False)

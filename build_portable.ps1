@@ -22,7 +22,7 @@ $runningApp = Get-Process -Name secondhandsql -ErrorAction SilentlyContinue
 if ($runningApp) {
     Write-Host ""
     Write-Host "Build blocked: old dist\secondhandsql\secondhandsql.exe is still running."
-    Write-Host "Close the packaged app first, or run build_portable.bat as Administrator, then retry."
+    Write-Host "Close the packaged app first, then retry."
     exit 1
 }
 

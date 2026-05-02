@@ -159,49 +159,11 @@ a {
     margin: 12px 0;
 }
 
-.address-bar {
+.admin-actions {
     display: flex;
-    flex-wrap: wrap;
     align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    background: var(--surface);
-    border: 1px solid var(--line);
-    border-radius: 20px;
-    box-shadow: var(--shadow);
-    padding: 16px 20px;
+    justify-content: flex-end;
     margin-bottom: 20px;
-}
-
-.address-info {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px 24px;
-}
-
-.address-info p {
-    margin: 0;
-    font-size: 0.95rem;
-}
-
-.qr-wrap {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 4px;
-}
-
-.qr-wrap img {
-    width: 80px;
-    height: 80px;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 3px;
-}
-
-.qr-wrap p {
-    margin: 0;
-    font-size: 0.75rem;
 }
 
 .stats-grid,
@@ -522,18 +484,12 @@ thead th {
         flex: 1 1 120px;
     }
 
-    .address-bar {
-        flex-direction: column;
-        align-items: stretch;
-        text-align: center;
+    .admin-actions {
+        justify-content: stretch;
     }
 
-    .qr-wrap {
-        order: -1;
-    }
-
-    .qr-wrap img {
-        width: 120px;
-        height: 120px;
+    .admin-actions form,
+    .admin-actions .button {
+        width: 100%;
     }
 }
